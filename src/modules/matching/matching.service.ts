@@ -16,6 +16,7 @@ import { DriverClientService } from './clients/driverClient.service';
 @Injectable()
 export class MatchingService {
   private activeMatchingTimers: Map<string, NodeJS.Timeout> = new Map();
+  private nearbyCache = new Map<string, { expiresAt: number; drivers: any[] }>();
 
   constructor(
     @InjectModel(Matching.name)
@@ -35,7 +36,79 @@ export class MatchingService {
     // Generate matching ID
     const matchingId = `match_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-    // Find nearby drivers from Geo Service
+    // Find nearby drivers from Geo Service (cached for short TTL)
+    const nearbyDrivers = await this.getNearbyDriversWithCache(data);
+
+    let effectiveNearby = nearbyDrivers;
+    if (!effectiveNearby || effectiveNearby.length === 0) {
+      // Fallback strategy: optionally retry once with expanded radius.
+      const expansion = Number(process.env.MATCHING_RADIUS_EXPANSION_FACTOR || 1.5);
+      if (expansion > 1) {
+        const retryRadius = Math.round(data.radiusInMeters * expansion);
+        this.logger.warn(
+          `No drivers found, retrying matching with expanded radius ${retryRadius}m`,
+          'Matching Service - requestMatch',
+        );
+        effectiveNearby = await this.getNearbyDriversWithCache({
+          ...data,
+          radiusInMeters: retryRadius,
+        });
+      }
+    }
+    if (!effectiveNearby || effectiveNearby.length === 0) {
+      throw new BadRequestException(ErrorMessages.NO_DRIVERS_AVAILABLE);
+    }
+
+    const areaId = data.areaId?.trim() || 'DEFAULT';
+    const cityCode = data.cityCode?.trim() || 'DEFAULT';
+
+    const rankedDrivers = await this.rankCandidateDrivers(effectiveNearby);
+    const matchingMode = data.matchingMode === 'parallel' ? 'parallel' : 'sequential';
+
+    // Create matching record
+    const matching = await this.matchingModel.create({
+      matchingId,
+      rideRequestId: data.rideRequestId,
+      areaId,
+      cityCode,
+      candidateDrivers: rankedDrivers.map((driver) => ({
+        driverId: driver.driverId,
+        distanceInMeters: driver.distanceInMeters,
+        etaInMinutes: driver.etaInMinutes,
+        status: 'queued',
+        rankingScore: driver.rankingScore,
+        acceptanceProbability: driver.acceptanceProbability,
+        driverRating: driver.driverRating,
+        cancellationRate: driver.cancellationRate,
+        responseTimeScore: driver.responseTimeScore,
+      })),
+      selectedDriver: null,
+      status: MatchingStatus.PENDING,
+    });
+
+    if (matchingMode === 'parallel') {
+      this.startParallelThenSequentialMatching(matchingId, matching.candidateDrivers, data.rideRequestId);
+    } else {
+      this.startSequentialMatching(matchingId, matching.candidateDrivers, data.rideRequestId);
+    }
+
+    return {
+      matchingId,
+      rideRequestId: data.rideRequestId,
+      candidateDrivers: matching.candidateDrivers,
+      status: matching.status,
+      matchingMode,
+    };
+  }
+
+  private async getNearbyDriversWithCache(data: RequestMatchDto): Promise<any[]> {
+    const key = `${data.latitude.toFixed(4)}:${data.longitude.toFixed(4)}:${Math.round(data.radiusInMeters)}`;
+    const now = Date.now();
+    const cached = this.nearbyCache.get(key);
+    if (cached && cached.expiresAt > now) {
+      return cached.drivers;
+    }
+
     const nearbyDrivers = await this.geoClient.findNearbyDrivers({
       latitude: data.latitude,
       longitude: data.longitude,
@@ -43,33 +116,173 @@ export class MatchingService {
       limit: 10,
     });
 
-    if (!nearbyDrivers || nearbyDrivers.length === 0) {
-      throw new BadRequestException(ErrorMessages.NO_DRIVERS_AVAILABLE);
+    const ttlMs = Number(process.env.MATCHING_NEARBY_CACHE_TTL_MS || 15000);
+    this.nearbyCache.set(key, { expiresAt: now + ttlMs, drivers: nearbyDrivers });
+    return nearbyDrivers;
+  }
+
+  private async rankCandidateDrivers(
+    nearbyDrivers: Array<{ driverId: string; distanceInMeters: number; etaInMinutes: number }>,
+  ) {
+    const ranked = await Promise.all(
+      nearbyDrivers.map(async (driver) => {
+        const historical = await this.getDriverHistoricalHeuristics(driver.driverId);
+        const distanceScore = Math.max(0, 1 - Math.min(driver.distanceInMeters, 10000) / 10000); // 0..1
+        const ratingScore = Math.min(Math.max(historical.driverRating, 0), 5) / 5; // 0..1
+        const cancellationScore = 1 - Math.min(Math.max(historical.cancellationRate, 0), 1); // 0..1
+        const responseTimeScore = Math.min(Math.max(historical.responseTimeScore, 0), 1); // 0..1
+
+        // Weighted blend for ranking
+        const rankingScore =
+          0.45 * distanceScore +
+          0.25 * ratingScore +
+          0.15 * cancellationScore +
+          0.15 * responseTimeScore;
+
+        // Basic acceptance probability heuristic (bounded 0.05..0.95)
+        const acceptanceProbability = Math.min(
+          0.95,
+          Math.max(
+            0.05,
+            0.2 + 0.35 * ratingScore + 0.2 * cancellationScore + 0.15 * responseTimeScore + 0.1 * distanceScore,
+          ),
+        );
+
+        return {
+          ...driver,
+          rankingScore: Math.round(rankingScore * 1000) / 1000,
+          acceptanceProbability: Math.round(acceptanceProbability * 1000) / 1000,
+          driverRating: historical.driverRating,
+          cancellationRate: historical.cancellationRate,
+          responseTimeScore: historical.responseTimeScore,
+        };
+      }),
+    );
+
+    ranked.sort((a, b) => {
+      if (b.rankingScore !== a.rankingScore) return b.rankingScore - a.rankingScore;
+      return a.distanceInMeters - b.distanceInMeters;
+    });
+    return ranked;
+  }
+
+  private async getDriverHistoricalHeuristics(driverId: string): Promise<{
+    driverRating: number;
+    cancellationRate: number;
+    responseTimeScore: number;
+  }> {
+    const history = await this.matchingModel.find({ 'candidateDrivers.driverId': driverId }).limit(30).lean();
+    let offered = 0;
+    let cancelledOrTimeout = 0;
+    let responseMsTotal = 0;
+    let responseCount = 0;
+
+    for (const match of history) {
+      const candidate = match.candidateDrivers?.find((c) => c.driverId === driverId);
+      if (!candidate) continue;
+      offered += 1;
+      if (candidate.status === 'rejected' || candidate.status === 'timeout') {
+        cancelledOrTimeout += 1;
+      }
+      if (candidate.requestedAt && candidate.respondedAt) {
+        const diff = new Date(candidate.respondedAt).getTime() - new Date(candidate.requestedAt).getTime();
+        if (diff > 0) {
+          responseMsTotal += diff;
+          responseCount += 1;
+        }
+      }
     }
 
-    // Create matching record
-    const matching = await this.matchingModel.create({
-      matchingId,
-      rideRequestId: data.rideRequestId,
-      candidateDrivers: nearbyDrivers.map((driver) => ({
-        driverId: driver.driverId,
-        distanceInMeters: driver.distanceInMeters,
-        etaInMinutes: driver.etaInMinutes,
-        status: 'pending',
-      })),
-      selectedDriver: null,
-      status: MatchingStatus.PENDING,
-    });
+    const avgResponseMs = responseCount > 0 ? responseMsTotal / responseCount : 12000;
+    const responseTimeScore = Math.max(0, 1 - Math.min(avgResponseMs, 15000) / 15000);
+    const cancellationRate = offered > 0 ? cancelledOrTimeout / offered : 0.12;
 
-    // Start sequential driver matching process
-    this.startSequentialMatching(matchingId, matching.candidateDrivers, data.rideRequestId);
+    // No explicit rating service currently wired; this deterministic baseline keeps ranking stable.
+    const deterministicBias = (Math.abs(this.hashCode(driverId)) % 70) / 100; // 0..0.69
+    const driverRating = Math.round((3.8 + deterministicBias) * 10) / 10; // 3.8..4.5
 
     return {
-      matchingId,
-      rideRequestId: data.rideRequestId,
-      candidateDrivers: matching.candidateDrivers,
-      status: matching.status,
+      driverRating,
+      cancellationRate: Math.round(cancellationRate * 1000) / 1000,
+      responseTimeScore: Math.round(responseTimeScore * 1000) / 1000,
     };
+  }
+
+  private hashCode(text: string): number {
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    }
+    return hash;
+  }
+
+  private async startParallelThenSequentialMatching(
+    matchingId: string,
+    candidateDrivers: Array<{ driverId: string; distanceInMeters: number; etaInMinutes: number; status: string }>,
+    rideRequestId: string,
+  ) {
+    const batchSize = Number(process.env.MATCHING_PARALLEL_BATCH_SIZE || 3);
+    const topBatch = candidateDrivers.slice(0, batchSize);
+    const remainder = candidateDrivers.slice(batchSize);
+
+    this.logger.log(
+      `Starting parallel matching for top ${topBatch.length}, then sequential fallback for ${remainder.length}`,
+      'Matching Service - startParallelThenSequentialMatching',
+    );
+
+    const availability = await Promise.all(
+      topBatch.map(async (driver) => {
+        try {
+          const status = await this.driverClient.getDriverStatus(driver.driverId);
+          return { driverId: driver.driverId, online: status?.status === 'ONLINE' };
+        } catch {
+          return { driverId: driver.driverId, online: false };
+        }
+      }),
+    );
+
+    const onlineDriverIds = availability.filter((a) => a.online).map((a) => a.driverId);
+    await Promise.all(
+      onlineDriverIds.map((id) => this.updateDriverStatus(matchingId, id, 'pending')),
+    );
+
+    const accepted = await this.waitForAnyDriverAcceptance(matchingId, onlineDriverIds);
+    if (accepted) {
+      await this.finalizeMatchInternal(matchingId, accepted, rideRequestId);
+      return;
+    }
+
+    await Promise.all(
+      onlineDriverIds.map((id) => this.updateDriverStatus(matchingId, id, 'timeout')),
+    );
+    await this.startSequentialMatching(matchingId, remainder, rideRequestId);
+  }
+
+  private async waitForAnyDriverAcceptance(
+    matchingId: string,
+    driverIds: string[],
+  ): Promise<string | null> {
+    if (driverIds.length === 0) return null;
+    const timeoutMs = DRIVER_RESPONSE_TIMEOUT_MS;
+    const start = Date.now();
+
+    while (Date.now() - start < timeoutMs) {
+      const matching = await this.matchingModel.findOne({ matchingId }).lean();
+      if (!matching || matching.status === MatchingStatus.FINALIZED) {
+        return matching?.selectedDriver || null;
+      }
+
+      const accepted = matching.candidateDrivers?.find(
+        (d) => driverIds.includes(d.driverId) && d.status === 'accepted',
+      );
+      if (accepted?.driverId) {
+        return accepted.driverId;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+
+    return null;
   }
 
   private async startSequentialMatching(
@@ -317,6 +530,31 @@ export class MatchingService {
         },
       },
     );
+  }
+
+  async countPendingMatchesByArea(areaId: string): Promise<number> {
+    const id = areaId?.trim() || 'DEFAULT';
+    const statusFilter = {
+      status: { $in: [MatchingStatus.PENDING, MatchingStatus.ACCEPTED] },
+    };
+
+    // Legacy docs may omit areaId; treat those as DEFAULT for demand counting.
+    if (id === 'DEFAULT') {
+      return this.matchingModel.countDocuments({
+        ...statusFilter,
+        $or: [
+          { areaId: 'DEFAULT' },
+          { areaId: { $exists: false } },
+          { areaId: null },
+          { areaId: '' },
+        ],
+      });
+    }
+
+    return this.matchingModel.countDocuments({
+      ...statusFilter,
+      areaId: id,
+    });
   }
 }
 

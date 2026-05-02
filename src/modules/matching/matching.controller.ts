@@ -117,6 +117,28 @@ export class MatchingController {
       });
     }
   }
+
+  @MessagePattern({ cmd: commands.COUNT_PENDING_MATCHES_BY_AREA })
+  async handleCountPendingMatchesByArea(@Payload() data: { areaId?: string }) {
+    try {
+      const count = await this.matchingService.countPendingMatchesByArea(data?.areaId ?? '');
+      return {
+        data: { count },
+        message: SuccessMessages.MATCHING_INITIATED,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error counting pending matches: ${error.message || JSON.stringify(error)}`,
+        error.stack,
+        'Matching Service - handleCountPendingMatchesByArea',
+      );
+
+      throw new RpcException({
+        statusCode: error.status || error.statusCode || 500,
+        message: error.message || ErrorMessages.INTERNAL_MATCHING_ERROR,
+      });
+    }
+  }
 }
 
 

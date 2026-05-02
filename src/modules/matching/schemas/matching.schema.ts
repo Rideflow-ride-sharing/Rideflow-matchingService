@@ -19,6 +19,11 @@ export class Matching {
         distanceInMeters: Number,
         etaInMinutes: Number,
         status: String,
+        rankingScore: Number,
+        acceptanceProbability: Number,
+        driverRating: Number,
+        cancellationRate: Number,
+        responseTimeScore: Number,
         requestedAt: Date,
         respondedAt: Date,
       },
@@ -30,6 +35,11 @@ export class Matching {
     distanceInMeters: number;
     etaInMinutes: number;
     status: string; // 'pending', 'accepted', 'rejected', 'timeout'
+    rankingScore?: number;
+    acceptanceProbability?: number;
+    driverRating?: number;
+    cancellationRate?: number;
+    responseTimeScore?: number;
     requestedAt?: Date;
     respondedAt?: Date;
   }>;
@@ -44,6 +54,13 @@ export class Matching {
   })
   status: string;
 
+  /** Used with pricing/surge demand metrics — pass from client or default. */
+  @Prop({ type: String, index: true, default: 'DEFAULT' })
+  areaId: string;
+
+  @Prop({ type: String, default: 'DEFAULT' })
+  cityCode: string;
+
   @Prop({ type: Date, default: Date.now })
   createdAt: Date;
 
@@ -52,6 +69,8 @@ export class Matching {
 }
 
 export const MatchingSchema = SchemaFactory.createForClass(Matching);
+
+MatchingSchema.index({ areaId: 1, status: 1 });
 
 
 

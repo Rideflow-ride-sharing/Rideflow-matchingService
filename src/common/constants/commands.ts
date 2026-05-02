@@ -3,6 +3,7 @@ export const commands = {
   REQUEST_MATCH: 'request_match',
   DRIVER_RESPONSE: 'driver_response',
   FINALIZE_MATCH: 'finalize_match',
+  COUNT_PENDING_MATCHES_BY_AREA: 'count_pending_matches_by_area',
 };
 
 // External service commands

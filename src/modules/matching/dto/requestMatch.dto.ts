@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsNumber, Min, Max } from 'class-validator';
+import { IsString, IsNotEmpty, IsNumber, Min, Max, IsOptional } from 'class-validator';
 
 export class RequestMatchDto {
   @IsString()
@@ -18,6 +18,24 @@ export class RequestMatchDto {
   @IsNumber()
   @Min(0.001)
   radiusInMeters: number;
+
+  /** If set, aggregated for surge “demand” (see payment-service fare metrics). */
+  @IsOptional()
+  @IsString()
+  areaId?: string;
+
+  @IsOptional()
+  @IsString()
+  cityCode?: string;
+
+  /**
+   * Matching strategy:
+   * - sequential: one-by-one offers (lower write/load)
+   * - parallel: top-N offers in parallel (lower rider latency)
+   */
+  @IsOptional()
+  @IsString()
+  matchingMode?: 'sequential' | 'parallel';
 }
 
 
