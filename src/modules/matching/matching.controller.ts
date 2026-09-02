@@ -4,7 +4,7 @@ import { MatchingService } from './matching.service';
 import { LoggerService } from '../../common/logger/logger.service';
 import { commands } from '../../common/constants/commands';
 import { ErrorMessages, SuccessMessages } from '../../common/constants';
-import { RequestMatchDto, DriverResponseDto, FinalizeMatchDto } from './dto';
+import { RequestMatchDto, DriverResponseDto, FinalizeMatchDto, AcceptOfferDto, RejectOfferDto } from './dto';
 
 @Controller()
 export class MatchingController {
@@ -137,6 +137,36 @@ export class MatchingController {
         statusCode: error.status || error.statusCode || 500,
         message: error.message || ErrorMessages.INTERNAL_MATCHING_ERROR,
       });
+    }
+  }
+
+  @MessagePattern({ cmd: commands.ACCEPT_OFFER })
+  async handleAcceptOffer(@Payload() data: AcceptOfferDto) {
+    try {
+      this.logger.log(`Received accept offer request: ${data.offerId}`, 'Matching Controller');
+      const result = await this.matchingService.acceptOffer(data.offerId);
+      return {
+        data: result,
+        message: 'Offer accepted successfully',
+      };
+    } catch (error) {
+      this.logger.error(`Error in handleAcceptOffer: ${error.message}`, error.stack, 'Matching Controller');
+      throw new RpcException(error.message);
+    }
+  }
+
+  @MessagePattern({ cmd: commands.REJECT_OFFER })
+  async handleRejectOffer(@Payload() data: RejectOfferDto) {
+    try {
+      this.logger.log(`Received reject offer request: ${data.offerId}`, 'Matching Controller');
+      const result = await this.matchingService.rejectOffer(data.offerId);
+      return {
+        data: result,
+        message: 'Offer rejected successfully',
+      };
+    } catch (error) {
+      this.logger.error(`Error in handleRejectOffer: ${error.message}`, error.stack, 'Matching Controller');
+      throw new RpcException(error.message);
     }
   }
 }

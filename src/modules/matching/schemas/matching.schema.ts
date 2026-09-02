@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document } from 'mongoose';
+import { Document, Schema as MongooseSchema, Types } from 'mongoose';
 import { MatchingStatus } from '../../../common/constants';
 
 export type MatchingDocument = Matching & Document;
@@ -15,7 +15,7 @@ export class Matching {
   @Prop({
     type: [
       {
-        driverId: String,
+        driverId: { type: MongooseSchema.Types.ObjectId },
         distanceInMeters: Number,
         etaInMinutes: Number,
         status: String,
@@ -31,7 +31,7 @@ export class Matching {
     default: [],
   })
   candidateDrivers: Array<{
-    driverId: string;
+    driverId: Types.ObjectId | string;
     distanceInMeters: number;
     etaInMinutes: number;
     status: string; // 'pending', 'accepted', 'rejected', 'timeout'
@@ -44,8 +44,8 @@ export class Matching {
     respondedAt?: Date;
   }>;
 
-  @Prop({ type: String, default: null })
-  selectedDriver: string | null;
+  @Prop({ type: MongooseSchema.Types.ObjectId, default: null })
+  selectedDriver: Types.ObjectId | string | null;
 
   @Prop({
     required: true,

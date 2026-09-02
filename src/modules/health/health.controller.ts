@@ -1,8 +1,10 @@
 import { Controller, Get } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection } from 'mongoose';
 
+@ApiTags('Health')
 @Controller('health')
 export class HealthController {
   constructor(
@@ -11,6 +13,8 @@ export class HealthController {
   ) {}
 
   @Get()
+  @ApiOperation({ summary: 'Health status', description: 'Returns overall health status' })
+  @ApiResponse({ status: 200, description: 'Health status retrieved successfully' })
   health() {
     return {
       status: 'up',
@@ -21,6 +25,8 @@ export class HealthController {
   }
 
   @Get('ready')
+  @ApiOperation({ summary: 'Readiness check', description: 'Checks if the service dependencies are ready' })
+  @ApiResponse({ status: 200, description: 'Service is ready' })
   async readiness() {
     const checks = {
       database: 'unknown',
@@ -48,6 +54,8 @@ export class HealthController {
   }
 
   @Get('live')
+  @ApiOperation({ summary: 'Liveness check', description: 'Checks if the service is alive' })
+  @ApiResponse({ status: 200, description: 'Service is alive' })
   liveness() {
     return {
       status: 'alive',

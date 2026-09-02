@@ -20,6 +20,7 @@ export const Queue = {
   MATCHING_SERVICE: 'matching_service_queue',
   GEO_SERVICE: 'geo_service_queue',
   DRIVER_SERVICE: 'driver_service_queue',
+  TRIP_SERVICE: 'trip_service_queue',
 };
 
 export const ErrorMessages = {
@@ -48,6 +49,21 @@ export const MatchingStatus = {
 } as const;
 
 export type MatchingStatusType = typeof MatchingStatus[keyof typeof MatchingStatus];
+
+export const CandidateDriverStatus = {
+  QUEUED: 'queued',
+  PENDING: 'pending',
+  ACCEPTED: 'accepted',
+  REJECTED: 'rejected',
+  TIMEOUT: 'timeout',
+} as const;
+
+export const OfferStatus = {
+  PENDING: 'PENDING',
+  ACCEPTED: 'ACCEPTED',
+  REJECTED: 'REJECTED',
+  EXPIRED: 'EXPIRED',
+} as const;
 
 // Timeout configuration
 export const DRIVER_RESPONSE_TIMEOUT_MS = 15000; // 15 seconds

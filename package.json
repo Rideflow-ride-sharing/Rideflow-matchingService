@@ -26,6 +26,7 @@
     "@nestjs/microservices": "^11.1.9",
     "@nestjs/mongoose": "^11.0.3",
     "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/swagger": "^11.2.6",
     "amqp-connection-manager": "^5.0.0",
     "amqplib": "^0.10.9",
     "class-transformer": "^0.5.1",
@@ -80,7 +81,3 @@
     "testEnvironment": "node"
   }
 }
-
-
-
-
